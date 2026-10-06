@@ -15,6 +15,7 @@ dependencies = [
     "pillow",
     "rich",
     "typer",
+    "streamlit",
 ]
 
 [project.scripts]
