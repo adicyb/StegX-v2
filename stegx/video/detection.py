@@ -190,7 +190,7 @@ def analyze_video_signature(
             recovered_bytes[7:9],
             byteorder="little",
         )
-        
+
         if filename_length > 255:
             return {"detected": False}
 

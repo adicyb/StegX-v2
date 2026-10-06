@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 
 dependencies = [
-    "cryptography",
+    "cryptography>=49.0.0",
     "opencv-python",
     "pillow",
     "rich",

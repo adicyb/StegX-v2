@@ -1,10 +1,11 @@
 import os
 import cv2
 import numpy as np
+import struct
 
 from stegx.core.crypto import decrypt_data
-from stegx.core.payload import MAGIC, get_payload_info
-from stegx.core.positions import generate_positions
+from stegx.core.payload import MAGIC, get_payload_info, extract_payload as extract_payload_router
+from stegx.core.positions import generate_positions, get_payload_bit_index_v2
 from stegx.utils.fs import get_safe_output_path
 from stegx.video.capacity import get_video_capacity
 
@@ -20,7 +21,17 @@ def bits_to_bytes(bits: list[int]) -> bytes:
         output.append(value)
     return bytes(output)
 
-def extract_bits_from_video(video_path: str, required_bits: int, positions: list[int] | None = None) -> list[int]:
+def extract_video_payload(
+    video_path: str,
+    output_directory: str,
+    password: str | None = None,
+    position_key: str | None = None,
+    force: bool = False,
+    use_v2: bool = False,
+):
+    capacity_info = get_video_capacity(video_path)
+    total_positions = capacity_info["available_bits"]
+
     video = cv2.VideoCapture(video_path)
     if not video.isOpened():
         raise ValueError("Could not open the video.")
@@ -29,126 +40,145 @@ def extract_bits_from_video(video_path: str, required_bits: int, positions: list
     height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_values = width * height * 3
 
-    positions_by_frame = {}
-    if positions is not None:
-        if len(positions) != required_bits:
-            video.release()
-            raise ValueError("Positions array must match required_bits")
-        for payload_bit_index, global_position in enumerate(positions):
-            frame_index = global_position // frame_values
-            local_position = global_position % frame_values
-            if frame_index not in positions_by_frame:
-                positions_by_frame[frame_index] = []
-            positions_by_frame[frame_index].append((local_position, payload_bit_index))
+    # We need a 2-stage extraction because V2 metadata is at the start of the *authenticated* payload.
+    # However, since the video capacity is known and the payload is small enough (1 GiB max),
+    # we can extract exactly what we need.
 
-    extracted_bits = [0] * required_bits
-    frames_processed = 0
-    bit_index = 0
+    # Wait, for randomized, we must know required_bits before extracting.
+    # So we do two full passes over the video, or we buffer extracted bits.
+    # "Do not load the complete video into memory."
+    # If we do 2 passes: Pass 1 extracts the header. Pass 2 extracts the whole payload.
+    # This is safe and O(1) memory!
 
-    while True:
-        if positions is None and bit_index >= required_bits:
-            break
-        
-        success, frame = video.read()
-        if not success:
-            break
+    def extract_streaming(req_bits: int) -> bytes:
+        cap = cv2.VideoCapture(video_path)
+        extracted = [0] * req_bits
 
-        flat_frame = frame.reshape(-1)
+        # Precompute V1 positions if needed
+        v1_by_frame = {}
+        if position_key and not use_v2:
+            v1_pos = generate_positions(total_positions, req_bits, position_key)
+            for pb_idx, gp in enumerate(v1_pos):
+                fi = gp // frame_values
+                lp = gp % frame_values
+                if fi not in v1_by_frame:
+                    v1_by_frame[fi] = []
+                v1_by_frame[fi].append((lp, pb_idx))
 
-        if positions is None:
-            remaining = required_bits - bit_index
-            if remaining <= 0:
-                continue
-            usable = min(remaining, len(flat_frame))
-            extracted_bits[bit_index:bit_index + usable] = (flat_frame[:usable] & 1).tolist()
-            bit_index += usable
-        else:
-            if frames_processed in positions_by_frame:
-                for local_pos, payload_bit_index in positions_by_frame[frames_processed]:
-                    extracted_bits[payload_bit_index] = int(flat_frame[local_pos] & 1)
+        frames_processed = 0
+        bit_index = 0
 
-        frames_processed += 1
+        while True:
+            succ, frame = cap.read()
+            if not succ:
+                break
+
+            flat = frame.reshape(-1)
+
+            if not position_key:
+                rem = req_bits - bit_index
+                if rem <= 0:
+                    break
+                us = min(rem, len(flat))
+                extracted[bit_index:bit_index+us] = (flat[:us] & 1).tolist()
+                bit_index += us
+            else:
+                if not use_v2:
+                    if frames_processed in v1_by_frame:
+                        for lp, pb_idx in v1_by_frame[frames_processed]:
+                            extracted[pb_idx] = int(flat[lp] & 1)
+                else:
+                    base_C = frames_processed * frame_values
+                    for lp in range(len(flat)):
+                        C = base_C + lp
+                        Y = get_payload_bit_index_v2(C, total_positions, req_bits, position_key)
+                        if Y != -1:
+                            extracted[Y] = int(flat[lp] & 1)
+
+            frames_processed += 1
+
+        cap.release()
+        return bits_to_bytes(extracted)
+
+    if not use_v2:
+        # V1
+        initial_bits = 17 * 8
+        initial_data = extract_streaming(initial_bits)
+
+        if initial_data[:len(MAGIC)] != MAGIC:
+            if position_key:
+                raise ValueError("No valid StegX payload signature found. The position key may be incorrect.")
+            raise ValueError("No valid StegX payload found in this video.")
+
+        filename_length = int.from_bytes(initial_data[7:9], byteorder="little")
+        if filename_length > 255:
+            raise ValueError(f"Payload filename length ({filename_length}) exceeds security limits.")
+
+        base_header_size = 5 + 1 + 1 + 2 + filename_length + 8
+        header_data = extract_streaming(base_header_size * 8)
+
+        flags = header_data[6]
+        encrypted = bool(flags & 0x01)
+        payload_size = int.from_bytes(header_data[-8:], byteorder="little")
+
+        MAX_PAYLOAD_SIZE = 2 * 1024 * 1024 * 1024
+        if payload_size > MAX_PAYLOAD_SIZE:
+            raise ValueError(f"Payload size ({payload_size}) exceeds absolute maximum limit ({MAX_PAYLOAD_SIZE} bytes).")
+
+        salt_size = 16 if encrypted else 0
+        total_payload_bytes = base_header_size + salt_size + payload_size
+        total_payload_bits = total_payload_bytes * 8
+
+        if total_payload_bits > total_positions:
+            raise ValueError(f"Payload ({total_payload_bits} bits) exceeds video capacity ({total_positions} bits).")
+
+        payload_bytes = extract_streaming(total_payload_bits)
+
+        # Use V1 decrypt logic
+        payload_info = get_payload_info(payload_bytes)
+        header_size = base_header_size + salt_size
+        payload_data = payload_bytes[header_size:header_size + payload_size]
+
+        if payload_info["encrypted"]:
+            if not password:
+                raise ValueError("This payload is encrypted. A password is required.")
+            payload_data = decrypt_data(payload_data, password, payload_info["salt"])
+
+        filename = payload_info["filename"]
+        encrypted = payload_info["encrypted"]
+
+    else:
+        # V2
+        initial_bits = 16 * 8
+        initial_data = extract_streaming(initial_bits)
+
+        if initial_data[:4] != b"STG2":
+            raise ValueError("No valid StegX V2 signature found. The position key may be incorrect.")
+
+        fl = struct.unpack("<H", initial_data[6:8])[0]
+        pl = struct.unpack("<Q", initial_data[8:16])[0]
+
+        if fl > 255:
+            raise ValueError(f"Payload filename length exceeds security limits.")
+        MAX_PAYLOAD_SIZE = 2 * 1024 * 1024 * 1024
+        if pl > MAX_PAYLOAD_SIZE:
+            raise ValueError(f"Payload size exceeds absolute maximum limit.")
+
+        total_payload_bytes = 16 + fl + 16 + 12 + pl + 16
+        if total_payload_bytes * 8 > total_positions:
+            raise ValueError(f"Payload size ({total_payload_bytes * 8} bits) exceeds video capacity.")
+
+        payload_bytes = extract_streaming(total_payload_bytes * 8)
+
+        filename, payload_data, flags = extract_payload_router(payload_bytes, password)
+        encrypted = True
 
     video.release()
-    return extracted_bits
 
-def extract_video_payload(
-    video_path: str,
-    output_directory: str,
-    password: str | None = None,
-    position_key: str | None = None,
-    force: bool = False,
-):
-    capacity_info = get_video_capacity(video_path)
-    total_positions = capacity_info["available_bits"]
-
-    initial_bits = 17 * 8
-    
-    if position_key:
-        positions = generate_positions(total_positions, initial_bits, position_key)
-        initial_bits_data = extract_bits_from_video(video_path, initial_bits, positions)
-    else:
-        initial_bits_data = extract_bits_from_video(video_path, initial_bits)
-
-    initial_data = bits_to_bytes(initial_bits_data)
-
-    if initial_data[:len(MAGIC)] != MAGIC:
-        if position_key:
-            raise ValueError("No valid StegX payload signature found. The position key may be incorrect.")
-        raise ValueError("No valid StegX payload found in this video.")
-
-    filename_length = int.from_bytes(initial_data[7:9], byteorder="little")
-    if filename_length > 255:
-        raise ValueError(f"Payload filename length ({filename_length}) exceeds security limits.")
-
-    base_header_size = 5 + 1 + 1 + 2 + filename_length + 8
-    header_bits_required = base_header_size * 8
-
-    if position_key:
-        positions = generate_positions(total_positions, header_bits_required, position_key)
-        header_bits = extract_bits_from_video(video_path, header_bits_required, positions)
-    else:
-        header_bits = extract_bits_from_video(video_path, header_bits_required)
-
-    base_header = bits_to_bytes(header_bits)
-
-    flags = base_header[6]
-    encrypted = bool(flags & 0x01)
-    payload_size = int.from_bytes(base_header[-8:], byteorder="little")
-
-    MAX_PAYLOAD_SIZE = 2 * 1024 * 1024 * 1024
-    if payload_size > MAX_PAYLOAD_SIZE:
-        raise ValueError(f"Payload size ({payload_size}) exceeds absolute maximum limit ({MAX_PAYLOAD_SIZE} bytes).")
-
-    salt_size = 16 if encrypted else 0
-    total_payload_bytes = base_header_size + salt_size + payload_size
-    total_payload_bits = total_payload_bytes * 8
-
-    if total_payload_bits > total_positions:
-        raise ValueError(f"Payload ({total_payload_bits} bits) exceeds video capacity ({total_positions} bits).")
-
-    filename = base_header[9:9+filename_length].decode("utf-8")
-    
+    # OUTPUT WRITING (After Authentication)
     output_path = str(get_safe_output_path(output_directory, filename))
     if os.path.exists(output_path) and not force:
         raise FileExistsError(f"Output file '{output_path}' already exists. Use --force to overwrite.")
-
-    if position_key:
-        positions = generate_positions(total_positions, total_payload_bits, position_key)
-        payload_bits = extract_bits_from_video(video_path, total_payload_bits, positions)
-    else:
-        payload_bits = extract_bits_from_video(video_path, total_payload_bits)
-
-    payload_bytes = bits_to_bytes(payload_bits)
-    payload_info = get_payload_info(payload_bytes)
-
-    header_size = base_header_size + salt_size
-    payload_data = payload_bytes[header_size:header_size + payload_size]
-
-    if payload_info["encrypted"]:
-        if not password:
-            raise ValueError("This payload is encrypted. A password is required.")
-        payload_data = decrypt_data(payload_data, password, payload_info["salt"])
 
     with open(output_path, "wb") as file:
         file.write(payload_data)

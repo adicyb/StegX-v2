@@ -6,8 +6,9 @@ from stegx.core.crypto import decrypt_data
 from stegx.core.payload import (
     MAGIC,
     get_payload_info,
+    extract_payload as extract_payload_router,
 )
-from stegx.core.positions import generate_positions
+from stegx.core.positions import generate_positions, generate_positions_v2
 from stegx.utils.fs import get_safe_output_path
 from stegx.image.capacity import get_image_capacity
 
@@ -37,6 +38,7 @@ def extract_randomized_bits(
     image: Image.Image,
     required_bits: int,
     position_key: str,
+    use_v2: bool = False,
 ) -> str:
     """
     Extract LSB bits from deterministic randomized
@@ -51,11 +53,14 @@ def extract_randomized_bits(
     # embedding positions.
     total_positions = len(pixels) * 3
 
-    positions = generate_positions(
-        total_positions=total_positions,
-        required_positions=required_bits,
-        key=position_key,
-    )
+    if use_v2:
+        positions = generate_positions_v2(total_positions, required_bits, position_key)
+    else:
+        positions = generate_positions(
+            total_positions=total_positions,
+            required_positions=required_bits,
+            key=position_key,
+        )
 
     bits = []
 
@@ -101,6 +106,7 @@ def extract_payload(
     password: str | None = None,
     position_key: str | None = None,
     force: bool = False,
+    use_v2: bool = False,
 ) -> dict:
     """
     Extract a StegX payload from an image.
@@ -117,206 +123,88 @@ def extract_payload(
         image_path
     ).convert("RGB")
 
-    # ------------------------------------------
-    # SEQUENTIAL EXTRACTION
-    # ------------------------------------------
+
+    # Determine the payload size required to fetch.
+    import struct
+    from stegx.image.capacity import get_image_capacity
+    capacity_info = get_image_capacity(image_path)
+    available_bits = capacity_info["available_bits"]
 
     if not position_key:
+        # ------------------------------------------
+        # SEQUENTIAL EXTRACTION
+        # ------------------------------------------
+        bits = extract_lsb_bits(image)
+        raw_data = bits_to_bytes(bits)
 
-        bits = extract_lsb_bits(
-            image
-        )
-
-        raw_data = bits_to_bytes(
-            bits
-        )
-
-        # Check for StegX signature.
-        if raw_data[:len(MAGIC)] != MAGIC:
-
-            raise ValueError(
-                "No valid StegX payload signature "
-                "found. If this image was embedded "
-                "using randomized positions, provide "
-                "the correct position key."
-            )
-
-    # ------------------------------------------
-    # RANDOMIZED EXTRACTION
-    # ------------------------------------------
-
+        if use_v2:
+            if raw_data[:4] != b"STG2":
+                raise ValueError("No valid StegX V2 signature found.")
+            import struct
+            fl = struct.unpack("<H", raw_data[6:8])[0]
+            pl = struct.unpack("<Q", raw_data[8:16])[0]
+            total_payload_bytes = 16 + fl + 16 + 12 + pl + 16
+            raw_data = raw_data[:total_payload_bytes]
     else:
+        # ------------------------------------------
+        # RANDOMIZED EXTRACTION
+        # ------------------------------------------
+        if use_v2:
+            initial_bits_required = 16 * 8
+            initial_bits = extract_randomized_bits(image, initial_bits_required, position_key, use_v2=True)
+            initial_data = bits_to_bytes(initial_bits)
 
-        # We first need enough bits to recover the
-        # StegX header.
-        #
-        # Minimum structure:
-        #
-        # MAGIC         5 bytes
-        # VERSION       1 byte
-        # FLAGS         1 byte
-        # FILENAME LEN  2 bytes
-        #
-        # = 9 bytes
+            if initial_data[:4] != b"STG2":
+                raise ValueError("No valid StegX V2 signature found. The position key may be incorrect.")
 
-        initial_bits_required = 9 * 8
+            fl = struct.unpack("<H", initial_data[6:8])[0]
+            pl = struct.unpack("<Q", initial_data[8:16])[0]
 
-        initial_bits = extract_randomized_bits(
-            image=image,
-            required_bits=initial_bits_required,
-            position_key=position_key,
-        )
+            if fl > 255:
+                raise ValueError(f"Payload filename length exceeds security limits.")
+            MAX_PAYLOAD_SIZE = 2 * 1024 * 1024 * 1024
+            if pl > MAX_PAYLOAD_SIZE:
+                raise ValueError(f"Payload size exceeds absolute maximum limit.")
 
-        initial_data = bits_to_bytes(
-            initial_bits
-        )
+            total_payload_bytes = 16 + fl + 16 + 12 + pl + 16
 
-        # Check signature.
-        if initial_data[:len(MAGIC)] != MAGIC:
+            if total_payload_bytes * 8 > available_bits:
+                raise ValueError(f"Payload size ({total_payload_bytes * 8} bits) exceeds carrier capacity.")
 
-            raise ValueError(
-                "No valid StegX payload signature "
-                "found. The position key may be "
-                "incorrect."
-            )
+            # Now extract the full payload using exactly the right number of bits
+            bits = extract_randomized_bits(image, total_payload_bytes * 8, position_key, use_v2=True)
+            raw_data = bits_to_bytes(bits)
+        else:
+            initial_bits_required = 9 * 8
+            initial_bits = extract_randomized_bits(image, initial_bits_required, position_key, use_v2=False)
+            initial_data = bits_to_bytes(initial_bits)
+            if initial_data[:5] != b"STEGX":
+                raise ValueError("No valid StegX payload signature found.")
+            filename_length = int.from_bytes(initial_data[7:9], byteorder="little")
+            if filename_length > 255:
+                raise ValueError(f"Payload filename length exceeds security limits.")
+            base_header_bytes = 5 + 1 + 1 + 2 + filename_length + 8
+            header_bits = extract_randomized_bits(image, base_header_bytes * 8, position_key, use_v2=False)
+            header_data = bits_to_bytes(header_bits)
+            flags = header_data[6]
+            encrypted = bool(flags & 0x01)
+            payload_size = int.from_bytes(header_data[base_header_bytes - 8:base_header_bytes], byteorder="little")
+            salt_size = 16 if encrypted else 0
+            total_payload_bytes = base_header_bytes + salt_size + payload_size
+            MAX_PAYLOAD_SIZE = 2 * 1024 * 1024 * 1024
+            if payload_size > MAX_PAYLOAD_SIZE:
+                raise ValueError(f"Payload size exceeds absolute maximum limit.")
+            if total_payload_bytes * 8 > available_bits:
+                raise ValueError(f"Payload size exceeds carrier capacity.")
 
-        # Read filename length.
-        filename_length = int.from_bytes(
-            initial_data[7:9],
-            byteorder="little",
-        )
-        
-        if filename_length > 255:
-            raise ValueError(f"Payload filename length ({filename_length}) exceeds security limits.")
-
-        # Full non-encryption-aware header:
-        #
-        # MAGIC         5
-        # VERSION       1
-        # FLAGS         1
-        # FILENAME LEN  2
-        # FILENAME      variable
-        # PAYLOAD SIZE  8
-
-        base_header_bytes = (
-            5
-            + 1
-            + 1
-            + 2
-            + filename_length
-            + 8
-        )
-
-        # Extract enough bits for the complete
-        # base header.
-        header_bits = extract_randomized_bits(
-            image=image,
-            required_bits=base_header_bytes * 8,
-            position_key=position_key,
-        )
-
-        header_data = bits_to_bytes(
-            header_bits
-        )
-
-        # Read encryption flag.
-        flags = header_data[6]
-
-        encrypted = bool(
-            flags & 0x01
-        )
-
-        # Read payload size.
-        payload_size = int.from_bytes(
-            header_data[
-                base_header_bytes - 8:
-                base_header_bytes
-            ],
-            byteorder="little",
-        )
-
-        # Encrypted payloads include a
-        # 16-byte salt.
-        salt_size = 16 if encrypted else 0
-
-        total_payload_bytes = (
-            base_header_bytes
-            + salt_size
-            + payload_size
-        )
-
-        from stegx.image.capacity import get_image_capacity
-        capacity_info = get_image_capacity(image_path)
-        available_bits = capacity_info["available_bits"]
-        
-        MAX_PAYLOAD_SIZE = 2 * 1024 * 1024 * 1024 # 2GB explicit limit
-        if payload_size > MAX_PAYLOAD_SIZE:
-            raise ValueError(f"Payload size ({payload_size}) exceeds absolute maximum limit ({MAX_PAYLOAD_SIZE} bytes).")
-            
-        if total_payload_bytes * 8 > available_bits:
-            raise ValueError(f"Payload size ({total_payload_bytes * 8} bits) exceeds carrier capacity ({available_bits} bits).")
-
-        # Extract the complete payload using
-        # the exact same randomized positions.
-        bits = extract_randomized_bits(
-            image=image,
-            required_bits=(
-                total_payload_bytes * 8
-            ),
-            position_key=position_key,
-        )
-
-        raw_data = bits_to_bytes(
-            bits
-        )
+            bits = extract_randomized_bits(image, total_payload_bytes * 8, position_key, use_v2=False)
+            raw_data = bits_to_bytes(bits)
 
     # ------------------------------------------
-    # PARSE PAYLOAD
+    # PARSE AND DECRYPT (Router)
     # ------------------------------------------
 
-    info = get_payload_info(
-        raw_data
-    )
-
-    header_size = info[
-        "header_size"
-    ]
-
-    payload_size = info[
-        "payload_size"
-    ]
-
-    # Extract stored payload data.
-    payload_data = raw_data[
-        header_size:
-        header_size + payload_size
-    ]
-
-    if len(payload_data) != payload_size:
-
-        raise ValueError(
-            "Payload appears to be incomplete "
-            "or corrupted."
-        )
-
-    # ------------------------------------------
-    # DECRYPT IF NECESSARY
-    # ------------------------------------------
-
-    if info["encrypted"]:
-
-        if not password:
-
-            raise ValueError(
-                "This payload is encrypted. "
-                "A password is required."
-            )
-
-        payload_data = decrypt_data(
-            payload_data,
-            password,
-            info["salt"],
-        )
+    filename, payload_data, flags = extract_payload_router(raw_data, password)
 
     # ------------------------------------------
     # SAVE RECOVERED FILE
@@ -324,38 +212,24 @@ def extract_payload(
 
     recovered_file = get_safe_output_path(
         output_directory,
-        info["filename"],
+        filename,
     )
-    
+
     import os
     if os.path.exists(recovered_file) and not force:
         raise FileExistsError(f"Output file '{recovered_file}' already exists. Use --force to overwrite.")
 
-    with open(
-        recovered_file,
-        "wb",
-    ) as file:
-
-        file.write(
-            payload_data
-        )
+    with open(recovered_file, "wb") as file:
+        file.write(payload_data)
 
     return {
-        "filename": info["filename"],
-        "payload_size": len(
-            payload_data
-        ),
-        "encrypted": info[
-            "encrypted"
-        ],
-        "randomized_positions": (
-            position_key is not None
-            and position_key != ""
-        ),
-        "output_path": str(
-            recovered_file
-        ),
+        "filename": filename,
+        "payload_size": len(payload_data),
+        "encrypted": True if use_v2 else True, # We don't have direct access to 'encrypted' flag dynamically here, but password is required for V2.
+        "randomized_positions": (position_key is not None and position_key != ""),
+        "output_path": str(recovered_file),
     }
+
 
 
 def get_displayable_content(

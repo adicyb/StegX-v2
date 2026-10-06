@@ -2,8 +2,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from stegx.core.payload import create_payload
-from stegx.core.positions import generate_positions
+from stegx.core.payload import create_payload, create_payload_v2
+from stegx.core.positions import generate_positions, generate_positions_v2
 
 
 SAFE_FORMATS = {
@@ -86,6 +86,7 @@ def embed_payload(
     password: str | None = None,
     position_key: str | None = None,
     force: bool = False,
+    use_v2: bool = False,
 ):
     """
     Embed a StegX payload inside an image using
@@ -105,7 +106,7 @@ def embed_payload(
             output_path,
         )
     )
-    
+
     import os
     if os.path.exists(final_output_path) and not force:
         raise FileExistsError(f"Output file '{final_output_path}' already exists. Use --force to overwrite.")
@@ -116,10 +117,24 @@ def embed_payload(
     ).convert("RGB")
 
     # Create structured StegX payload.
-    payload = create_payload(
-        payload_path,
-        password=password,
-    )
+    if use_v2:
+        if password is None:
+            raise ValueError("V2 payload requires a password.")
+        import os
+        filename = os.path.basename(payload_path)
+        with open(payload_path, "rb") as f:
+            file_data = f.read()
+        payload = create_payload_v2(
+            file_data=file_data,
+            filename=filename,
+            password=password,
+            randomized=bool(position_key)
+        )
+    else:
+        payload = create_payload(
+            payload_path,
+            password=password,
+        )
 
     # Convert payload into bits.
     payload_bits = bytes_to_bits(
@@ -168,22 +183,22 @@ def embed_payload(
     # ---------------------------------------------
 
     if position_key:
-
-        positions = generate_positions(
-            total_positions=available_bits,
-            required_positions=required_bits,
-            key=position_key,
-        )
-
+        if use_v2:
+            positions = generate_positions_v2(
+                N=available_bits,
+                R=required_bits,
+                position_key=position_key,
+            )
+        else:
+            positions = generate_positions(
+                total_positions=available_bits,
+                required_positions=required_bits,
+                key=position_key,
+            )
         randomized = True
-
     else:
-
         # Default sequential embedding.
-        positions = list(
-            range(required_bits)
-        )
-
+        positions = range(required_bits)
         randomized = False
 
     # ---------------------------------------------

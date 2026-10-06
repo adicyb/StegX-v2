@@ -26,6 +26,20 @@ Every pixel has a channel it doesn't need. StegX writes payloads into that spare
 
 <br/>
 
+## `$ about StegX V2`
+
+StegX defaults to the **StegX V2 protocol**, which provides:
+- **Authenticated Encryption**: ChaCha20-Poly1305 + Argon2id ensures confidentiality and tamper-evidence.
+- **Randomized Position Generator**: Keyed Feistel cycle-walking permutation scatters payload bits deterministically across the media carrier without ever hitting the same pixel twice.
+- **Independent Position Key**: Isolates cryptographic payload security from steganographic carrier placement.
+- **Streaming Media Integration**: Zero-memory `O(1)` dynamic position inversion enables mathematically perfect video stream decoding without holding frame pixels in RAM.
+
+⚠️ **Important Security Distinction**:
+**Encryption security** provides cryptographic confidentiality and prevents tampering (provided the password is secure).
+**Steganographic detectability** is entirely separate. Randomized placement scatters data but does *not* eliminate statistical artifacts. Adversaries using advanced steganalysis or machine learning can still detect the presence of hidden data, even when randomized and encrypted.
+
+<br/>
+
 ## `$ features`
 
 <table>
@@ -286,140 +300,76 @@ Running `stegx` with no arguments displays the available commands grouped by cat
 
 ## `$ usage`
 
-```bash
-python3 -m stegx.cli info                    # project info
-python3 -m stegx.cli check samples/image.png # identify media format
-```
+### StegX V2
 
-> After installing with `pip install -e .`, you can drop the `python3 -m stegx.cli` prefix and just use `stegx` (e.g. `stegx info`, `stegx check samples/image.png`).
+StegX defaults to the modern V2 format, which requires a password and an independent position key (for default randomized mode).
 
-#### image
+#### Password Handling
+Passwords are never accepted as plaintext command-line arguments to prevent leakage in shell history or process monitors.
+Use `-p` or `--password` to trigger a secure interactive prompt. For automation, the `STEGX_PASSWORD` environment variable is supported (with a security warning).
 
-<details open>
-<summary><b>capacity &amp; payload inspection</b></summary>
-
-```bash
-python3 -m stegx.cli capacity samples/image.png
-python3 -m stegx.cli payload-info secret.txt
-```
-
-</details>
+#### Overwrite Protection
+Extraction uses safe path resolution. Existing files will not be overwritten unless `--force` (`-f`) is explicitly provided.
 
 <details open>
-<summary><b>hide</b></summary>
+<summary><b>image</b></summary>
 
 ```bash
+# V2 embedding (randomized by default)
 python3 -m stegx.cli hide-image \
-  samples/test.png \
+  samples/carrier.png \
   samples/secret.txt \
-  --output-path samples/stego.png
+  --output-path samples/stego.png \
+  --position-key my_random_seed \
+  -p
 
-# with encryption
-python3 -m stegx.cli hide-image \
-  samples/test.png \
-  samples/secret.txt \
-  --output-path samples/encrypted_stego.png \
-  --password mypassword
-```
-
-**Randomized pixel selection.** By default, StegX embeds sequentially, starting from the first pixel. Passing `--position-key` instead derives a pixel-visitation order from the key and scatters the payload across that pseudorandom path, rather than writing to a contiguous run of pixels. This makes the payload's location dependent on the key rather than a fixed, predictable start point, which is useful for classroom exercises on the limitations of naive sequential LSB steganalysis.
-
-```bash
-python3 -m stegx.cli hide-image \
-  samples/test.png \
-  samples/secret.txt \
-  --output-path samples/random_stego.png \
-  --position-key mysecretkey
-
-# randomized placement + encryption can be combined
-python3 -m stegx.cli hide-image \
-  samples/test.png \
-  samples/secret.txt \
-  --output-path samples/random_encrypted_stego.png \
-  --position-key mysecretkey \
-  --password mypassword
-```
-
-> The position key only determines *where* bits are written — it is not a substitute for `--password` encryption of the payload contents. Use both together for randomized placement of encrypted data.
-
-</details>
-
-<details open>
-<summary><b>extract</b></summary>
-
-```bash
-python3 -m stegx.cli extract-image samples/stego.png
-
-# encrypted payloads
+# Extraction
 python3 -m stegx.cli extract-image \
-  samples/encrypted_stego.png \
-  --password mypassword
+  samples/stego.png \
+  --output-directory samples/extracted \
+  --position-key my_random_seed \
+  -p
 ```
 
-If the payload was hidden with `--position-key`, the same key must be supplied on extraction to reconstruct the pixel-visitation order:
+> The `--position-key` controls *where* bits are hidden. The `-p` password controls *what* the bits decrypt to.
 
+If low latency is required, you can use sequential mode:
 ```bash
-python3 -m stegx.cli extract-image \
-  samples/random_stego.png \
-  --position-key mysecretkey
-
-# randomized placement + encryption
-python3 -m stegx.cli extract-image \
-  samples/random_encrypted_stego.png \
-  --position-key mysecretkey \
-  --password mypassword
+python3 -m stegx.cli hide-image samples/carrier.png samples/secret.txt -p --sequential
 ```
-
-> Recovered text files are printed to the terminal automatically.
-
-</details>
-
-#### video
-
-> ⚠️ **Important:** LSB-based video embedding requires pixel values to survive encoding. StegX currently uses the FFV1 lossless codec for stego video output. Converting the resulting video to MP4/H.264, uploading it to a platform that recompresses video, or transcoding it may destroy the hidden payload.
-
-<details open>
-<summary><b>info, capacity &amp; codec</b></summary>
-
-```bash
-python3 -m stegx.cli video-info samples/test.mp4
-python3 -m stegx.cli video-capacity samples/test.mp4
-python3 -m stegx.cli codec-test samples/test.mp4
-```
-
-> Video capacity is theoretical — actual usable capacity depends on whether the output codec preserves pixel values. StegX currently targets **FFV1**, a lossless codec suitable for LSB modification.
-
 </details>
 
 <details open>
-<summary><b>integrity check</b></summary>
+<summary><b>video (streaming support)</b></summary>
 
-```bash
-python3 -m stegx.cli video-integrity \
-  samples/test.mp4 \
-  samples/codec_test_FFV1.avi
-```
-
-A perfect match means pixel values survived the codec round-trip.
-
-</details>
-
-<details open>
-<summary><b>hide &amp; extract</b></summary>
+Video embedding utilizes an $\mathcal{O}(1)$ algorithmic position inverse, guaranteeing that neither the embedding nor the extraction routines store arrays of video pixels in memory.
 
 ```bash
 python3 -m stegx.cli hide-video \
-  samples/test.mp4 \
+  samples/video.mp4 \
   samples/secret.txt \
-  --output-path samples/stego_video.avi \
-  --password mypassword    # optional
+  --output-path samples/stego.avi \
+  --position-key video_seed \
+  -p
 
 python3 -m stegx.cli extract-video \
-  samples/stego_video.avi \
-  --password mypassword    # if encrypted
+  samples/stego.avi \
+  --position-key video_seed \
+  -p
 ```
 
-> `--position-key` randomized pixel selection is currently image-only; video embedding remains sequential. See [Roadmap](#-roadmap).
+> ⚠️ **Important:** LSB-based video embedding requires pixel values to survive encoding. StegX currently uses the **FFV1 lossless codec** for stego video output. Transcoding it to MP4/H.264 or uploading it to web platforms will destroy the payload.
+
+</details>
+
+<details open>
+<summary><b>V1 legacy format</b></summary>
+
+To use or extract legacy unauthenticated StegX V1 payloads, pass the `--v1` flag.
+```bash
+python3 -m stegx.cli hide-image samples/carrier.png samples/secret.txt --v1
+python3 -m stegx.cli extract-image samples/stego.png --v1
+```
 
 </details>
 
@@ -427,56 +377,32 @@ python3 -m stegx.cli extract-video \
 
 ## `$ payload format`
 
+### V2 Format (Authenticated)
+
 ```text
 ┌───────────────┐
-│ MAGIC: STEGX  │  5 bytes
+│ MAGIC: STG2   │  4 bytes
 ├───────────────┤
-│ VERSION       │  1 byte
+│ VERSION       │  1 byte (0x02)
 ├───────────────┤
 │ FLAGS         │  1 byte
 ├───────────────┤
-│ FILENAME LEN  │  2 bytes
+│ SALT          │  16 bytes (Argon2id)
 ├───────────────┤
-│ FILENAME      │  variable
+│ NONCE         │  12 bytes (ChaCha20)
 ├───────────────┤
-│ PAYLOAD SIZE  │  8 bytes
+│ CIPHERTEXT    │  variable
 ├───────────────┤
-│ SALT          │  16 bytes (if encrypted)
-├───────────────┤
-│ PAYLOAD DATA  │  variable
+│ MAC TAG       │  16 bytes (Poly1305)
 └───────────────┘
 ```
 
-This header makes signature detection and structured extraction possible. It identifies the payload format, encryption state, original filename, and encrypted payload size so StegX knows exactly how much data to recover. When `--position-key` is used, the header and payload bits are written across a key-derived pseudorandom pixel order instead of sequential pixels; the same key is required to walk that order again during detection and extraction.
+The ciphertext encapsulates the filename length, filename, and plaintext data. Validating the Poly1305 MAC tag guarantees cryptographic integrity of the payload, rejecting incorrect passwords and tampering identically to prevent oracle attacks.
 
-<details>
-<summary><b>detection flow</b></summary>
-
-```text
-                    ┌─────────────────┐
-                    │   Media File    │
-                    └────────┬────────┘
-                             │
-                             ▼
-                    ┌─────────────────┐
-                    │ Media Detection │
-                    └────────┬────────┘
-                             │
-                 ┌───────────┴───────────┐
-                 ▼                       ▼
-        ┌────────────────┐      ┌────────────────┐
-        │ Signature Scan │      │ Heuristic Scan │
-        └───────┬────────┘      └───────┬────────┘
-                ▼                       ▼
-        STEGX Signature?         LSB Statistics
-                └───────────┬───────────┘
-                             ▼
-                  ┌───────────────────┐
-                  │  Detection Result │
-                  └───────────────────┘
-```
-
-</details>
+### Protocol Details
+- **Key Derivation:** Argon2id (t=2, m=65536 KiB, p=4) derives 32 bytes from the interactive password.
+- **AEAD:** ChaCha20-Poly1305 (RFC 7539).
+- **Position Generation:** Keyed Feistel cycle-walking permutation using ChaCha20 as the PRF, domain separated strictly for position layout.
 
 <br/>
 
@@ -498,19 +424,15 @@ The project currently includes tests for:
 - Video embedding and extraction
 - Encrypted and randomized workflows
 
-Current test suite: **22 tests passing**.
+Current test suite: **95 tests passing**.
 
 <br/>
 
 ## `$ limitations`
 
-- Image embedding defaults to sequential 1-bit LSB; `--position-key` enables key-derived randomized pixel selection as an alternative, but the order is still a single deterministic path per key, not a cryptographically secure PRP
-- Randomized pixel selection (`--position-key`) is image-only; video embedding is still sequential
-- Video embedding requires a lossless codec (FFV1) — any recompression or transcode (e.g. to MP4/H.264) can destroy the payload
-- Heuristic detection is statistical, never conclusive
-- Signature detection only recognizes StegX's own payload format, and requires the correct `--position-key` to locate a randomized payload
-- Video capacity figures are theoretical and codec-dependent
-- Built for local experimentation and education, not production use
+- **Steganalysis:** Randomized pixel selection mathematically disperses bits but does **not** make the steganography undetectable. Advanced heuristic or machine-learning steganalysis can still detect carrier alteration. Do not confuse encryption security with steganographic invisibility.
+- **Video Compression:** Video embedding requires a lossless codec (FFV1). Any lossy recompression (e.g. to MP4/H.264) will destroy the payload.
+- **Legacy Fallback:** The CLI does not silently fallback between V1 and V2. Legacy payload extraction requires the explicit `--v1` flag.
 
 <br/>
 

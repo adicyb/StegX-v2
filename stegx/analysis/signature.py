@@ -138,7 +138,7 @@ def extract_lsb_data(
         initial_data[7:9],
         byteorder="little",
     )
-    
+
     if filename_length > 255:
         return initial_data
 

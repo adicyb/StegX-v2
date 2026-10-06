@@ -1,3 +1,4 @@
+import sys
 import typer
 import os
 
@@ -148,9 +149,11 @@ def capacity(image_path: str):
 
     except FileNotFoundError:
         print(f"\n[-] File not found: {image_path}")
+        sys.exit(1)
 
     except Exception as error:
         print(f"\n[-] Could not analyze image: {error}")
+        sys.exit(1)
 
 @app.command()
 def payload_info(file_path: str):
@@ -173,9 +176,11 @@ def payload_info(file_path: str):
 
     except FileNotFoundError:
         print(f"\n[-] File not found: {file_path}")
+        sys.exit(1)
 
     except Exception as error:
         print(f"\n[-] Could not create payload: {error}")
+        sys.exit(1)
 
 @app.command()
 def hide_image(
@@ -204,28 +209,52 @@ def hide_image(
         "--position-key",
         "-k",
         help=(
-            "Key used to generate randomized embedding "
-            "positions."
+            "Independent key used to generate randomized embedding "
+            "positions in V2."
         ),
+    ),
+    sequential: bool = typer.Option(
+        False,
+        "--sequential",
+        help="Use sequential carrier positions instead of randomized mode (V2 default).",
+    ),
+    v1: bool = typer.Option(
+        False,
+        "--v1",
+        help="Use legacy V1 unauthenticated wire format.",
     ),
 ):
     """Hide a file inside an image using LSB steganography."""
 
+
     try:
+
+        use_v2 = not v1
+
+        if use_v2 and not sequential and not position_key:
+            print("\n[-] Error: V2 randomized mode is the default and requires an independent --position-key.", file=sys.stderr)
+            print("[-] Provide a --position-key, or use --sequential for sequential mode.", file=sys.stderr)
+            sys.exit(1)
 
         password = None
         if interactive_password:
             password = typer.prompt("Password", hide_input=True)
         elif password_env:
+            print("[!] Warning: STEGX_PASSWORD environment variable is used. This may be exposed to debugging infrastructure.")
             password = password_env
+
+        if use_v2 and not password:
+            print("\n[-] Error: V2 payload embedding requires a password (-p).", file=sys.stderr)
+            sys.exit(1)
 
         result = embed_payload(
             image_path,
             payload_path,
             output_path,
             password=password,
-            position_key=position_key,
+            position_key=position_key if not sequential else None,
             force=force,
+            use_v2=use_v2,
         )
 
         print("\n[+] Payload embedded successfully!")
@@ -277,19 +306,22 @@ def hide_image(
         print(
             f"\n[-] File not found: {error}"
         )
+        sys.exit(1)
 
     except ValueError as error:
 
         print(
             f"\n[-] {error}"
         )
+        sys.exit(1)
 
     except Exception as error:
 
         print(
             f"\n[-] Embedding failed: {error}"
         )
-        
+        sys.exit(1)
+
 @app.command()
 def extract_image(
     image_path: str,
@@ -317,15 +349,23 @@ def extract_image(
         "-k",
         help="Key used to reproduce randomized embedding positions.",
     ),
+    v1: bool = typer.Option(
+        False,
+        "--v1",
+        help="Extract using legacy V1 format (V2 is default).",
+    ),
 ):
     """Extract a hidden StegX payload from an image."""
 
+
     try:
+        use_v2 = not v1
 
         password = None
         if interactive_password:
             password = typer.prompt("Password", hide_input=True)
         elif password_env:
+            print("[!] Warning: STEGX_PASSWORD environment variable is used. This may be exposed to debugging infrastructure.")
             password = password_env
 
         result = extract_payload(
@@ -334,6 +374,7 @@ def extract_image(
             password=password,
             position_key=position_key,
             force=force,
+            use_v2=use_v2,
         )
 
         print("\n[+] Payload extracted successfully!")
@@ -386,12 +427,15 @@ def extract_image(
 
     except FileNotFoundError as error:
         print(f"\n[-] File not found: {error}")
+        sys.exit(1)
 
     except ValueError as error:
         print(f"\n[-] Extraction failed: {error}")
+        sys.exit(1)
 
     except Exception as error:
         print(f"\n[-] Unexpected error: {error}")
+        sys.exit(1)
 
 @app.command()
 def analyze_signature(
@@ -465,18 +509,21 @@ def analyze_signature(
         print(
             f"\n[-] File not found: {image_path}"
         )
+        sys.exit(1)
 
     except ValueError as error:
 
         print(
             f"\n[-] Analysis failed: {error}"
         )
+        sys.exit(1)
 
     except Exception as error:
 
         print(
             f"\n[-] Analysis failed: {error}"
         )
+        sys.exit(1)
 @app.command()
 def analyze_heuristic(image_path: str):
     """Analyze an image for possible LSB steganography."""
@@ -535,9 +582,11 @@ def analyze_heuristic(image_path: str):
 
     except FileNotFoundError:
         print(f"\n[-] File not found: {image_path}")
+        sys.exit(1)
 
     except Exception as error:
         print(f"\n[-] Analysis failed: {error}")
+        sys.exit(1)
 
 @app.command()
 def video_info(video_path: str):
@@ -728,6 +777,7 @@ def codec_test(
         print(
             f"\n[-] Codec test failed: {error}"
         )
+        sys.exit(1)
 
 @app.command()
 def video_integrity(
@@ -812,7 +862,7 @@ def hide_video(
     password_env: str = typer.Option(
         None,
         envvar="STEGX_PASSWORD",
-        help="Provide password via STEGX_PASSWORD env var (Note: may be visible in process monitors).",
+        help="Provide password via STEGX_PASSWORD env var.",
     ),
     interactive_password: bool = typer.Option(
         False,
@@ -830,189 +880,133 @@ def hide_video(
         None,
         "--position-key",
         "-k",
-        help=(
-            "Key used to generate randomized "
-            "embedding positions."
-        ),
+        help="Independent key used to generate randomized embedding positions.",
+    ),
+    sequential: bool = typer.Option(
+        False,
+        "--sequential",
+        help="Use sequential carrier positions instead of randomized mode (V2 default).",
+    ),
+    v1: bool = typer.Option(
+        False,
+        "--v1",
+        help="Use legacy V1 unauthenticated wire format.",
     ),
 ):
     """Hide a file inside a video using LSB steganography."""
 
     try:
+        use_v2 = not v1
+
+        if use_v2 and not sequential and not position_key:
+            print("\n[-] Error: V2 randomized mode is the default and requires an independent --position-key.", file=sys.stderr)
+            print("[-] Provide a --position-key, or use --sequential for sequential mode.", file=sys.stderr)
+            sys.exit(1)
 
         password = None
         if interactive_password:
             password = typer.prompt("Password", hide_input=True)
         elif password_env:
+            print("[!] Warning: STEGX_PASSWORD environment variable is used. This may be exposed to debugging infrastructure.")
             password = password_env
+
+        if use_v2 and not password:
+            print("\n[-] Error: V2 payload embedding requires a password (-p).", file=sys.stderr)
+            sys.exit(1)
 
         result = embed_video_payload(
             video_path,
             payload_path,
             output_path,
             password=password,
-            position_key=position_key,
+            position_key=position_key if not sequential else None,
             force=force,
+            use_v2=use_v2,
         )
 
-        print(
-            "\n[+] Payload embedded successfully!"
-        )
-
-        print(
-            f"[+] Encrypted: "
-            f"{result['encrypted']}"
-        )
-
-        print(
-            f"[+] Randomized positions: "
-            f"{result['randomized_positions']}"
-        )
-
-        print(
-            f"[+] Payload bits: "
-            f"{result['payload_bits']:,}"
-        )
-
-        print(
-            f"[+] Carrier capacity: "
-            f"{result['available_bits']:,} bits"
-        )
-
-        print(
-            f"[+] Frames processed: "
-            f"{result['frames_processed']:,}"
-        )
-
-        print(
-            "[+] Codec: FFV1 (lossless)"
-        )
-
-        print(
-            f"[+] Output: "
-            f"{result['output_path']}"
-        )
+        print("\n[+] Payload embedded successfully in video!")
+        print(f"[+] Output saved to: {result['output_path']}")
 
     except FileNotFoundError as error:
-
-        print(
-            f"\n[-] File not found: {error}"
-        )
-
+        print(f"\n[-] File not found: {error}")
+        sys.exit(1)
     except ValueError as error:
-
-        print(
-            f"\n[-] Embedding failed: {error}"
-        )
-
+        print(f"\n[-] Embedding failed: {error}")
+        sys.exit(1)
     except Exception as error:
-
-        print(
-            f"\n[-] Unexpected error: {error}"
-        )
+        print(f"\n[-] Unexpected error: {error}")
+        sys.exit(1)
 
 @app.command()
 def extract_video(
     video_path: str,
     output_directory: str = "samples/extracted_video",
-    password: str | None = typer.Option(
+    password_env: str = typer.Option(
         None,
+        envvar="STEGX_PASSWORD",
+        help="Provide password via STEGX_PASSWORD env var.",
+    ),
+    interactive_password: bool = typer.Option(
+        False,
         "--password",
         "-p",
-        help="Password required for encrypted payloads.",
+        help="Securely prompt for a password.",
     ),
-    position_key: str | None = typer.Option(
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force overwrite of existing output files.",
+    ),
+    position_key: str = typer.Option(
         None,
         "--position-key",
         "-k",
-        help=(
-            "Key used to reproduce randomized embedding "
-            "positions."
-        ),
+        help="Key used to reproduce randomized embedding positions.",
+    ),
+    v1: bool = typer.Option(
+        False,
+        "--v1",
+        help="Extract using legacy V1 format (V2 is default).",
     ),
 ):
     """Extract a hidden StegX payload from a video."""
 
     try:
+        use_v2 = not v1
+
+        password = None
+        if interactive_password:
+            password = typer.prompt("Password", hide_input=True)
+        elif password_env:
+            print("[!] Warning: STEGX_PASSWORD environment variable is used. This may be exposed to debugging infrastructure.")
+            password = password_env
 
         result = extract_video_payload(
-            video_path=video_path,
-            output_directory=output_directory,
+            video_path,
+            output_directory,
             password=password,
             position_key=position_key,
+            force=force,
+            use_v2=use_v2,
         )
 
-        print(
-            "\n[+] Payload extracted successfully!"
-        )
-
-        print(
-            f"[+] Original filename: "
-            f"{result['filename']}"
-        )
-
-        print(
-            f"[+] Payload size: "
-            f"{format_size(result['payload_size'])}"
-        )
-
-        print(
-            f"[+] Encrypted: "
-            f"{result['encrypted']}"
-        )
-
-        print(
-            f"[+] Randomized positions: "
-            f"{result['randomized']}"
-        )
-
-        print(
-            f"[+] Recovered file: "
-            f"{result['output_path']}"
-        )
-
-        # Display readable text files directly.
-        content = get_displayable_content(
-            result["output_path"]
-        )
-
-        if content is not None:
-
-            print(
-                "\n--- Recovered Content ---\n"
-            )
-
-            print(content)
-
-        else:
-
-            print(
-                "\n[+] Binary or non-text file detected."
-            )
-
-            print(
-                "[+] Content cannot be displayed directly "
-                "in the terminal."
-            )
+        print("\n[+] Payload extracted successfully from video!")
+        print(f"[+] Original filename: {result['filename']}")
+        print(f"[+] Payload size: {format_size(result['payload_size'])}")
+        print(f"[+] Encrypted: {result['encrypted']}")
+        print(f"[+] Output saved to: {result['output_path']}")
 
     except FileNotFoundError as error:
-
-        print(
-            f"\n[-] File not found: {error}"
-        )
-
+        print(f"\n[-] File not found: {error}")
+        sys.exit(1)
     except ValueError as error:
-
-        print(
-            f"\n[-] Extraction failed: {error}"
-        )
-
+        print(f"\n[-] Extraction failed: {error}")
+        sys.exit(1)
     except Exception as error:
+        print(f"\n[-] Unexpected error: {error}")
+        sys.exit(1)
 
-        print(
-            f"\n[-] Unexpected error: {error}"
-        )
-        
 @app.command()
 def analyze_video_signature(
     video_path: str,
@@ -1094,12 +1088,14 @@ def analyze_video_signature(
         print(
             f"\n[-] File not found: {video_path}"
         )
+        sys.exit(1)
 
     except Exception as error:
 
         print(
             f"\n[-] Analysis failed: {error}"
         )
+        sys.exit(1)
 @app.command()
 def analyze_video_heuristic(
     video_path: str,
@@ -1183,7 +1179,7 @@ def analyze_video_heuristic(
             f"\n[-] Analysis failed: "
             f"{error}"
         )
-        
+
 @app.command()
 def detect(
     file_path: str,
@@ -1388,19 +1384,22 @@ def detect(
         print(
             f"\n[-] File not found: {file_path}"
         )
+        sys.exit(1)
 
     except ValueError as error:
 
         print(
             f"\n[-] Detection failed: {error}"
         )
+        sys.exit(1)
 
     except Exception as error:
 
         print(
             f"\n[-] Detection failed: {error}"
         )
+        sys.exit(1)
 
-    
+
 if __name__ == "__main__":
     app()
