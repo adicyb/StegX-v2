@@ -1,455 +1,262 @@
-<div align="center">
+# StegX
 
+**Secure Media Steganography Toolkit**
+
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square)
+![Release](https://img.shields.io/badge/Release-v2.1.0-cyan?style=flat-square)
+![License](https://img.shields.io/badge/License-Educational-00E5A0?style=flat-square)
+![Tests](https://img.shields.io/badge/Tests-97%20Passed-success?style=flat-square)
+![Interface](https://img.shields.io/badge/Interface-CLI%20%7C%20Web%20Console-blueviolet?style=flat-square)
+
+StegX is a modern, high-performance steganography framework designed to securely embed authenticated, encrypted payloads into image and video media. Combining strong cryptography with Least Significant Bit (LSB) embedding, StegX provides a robust platform for digital forensics research, security experimentation, and secure data handling.
+
+StegX features both a powerful **Command Line Interface (CLI)** and a fully featured **Web Console** for graphical, interactive operation.
+
+---
+
+## 🔥 StegX V2 Foundation & V2.1.0 Highlights
+
+StegX V2 introduced the authenticated STG2 protocol and hardened media-processing architecture. V2.1.0 builds on that foundation with a new Web Console and an improved user experience.
+
+**StegX V2 Core Architecture:**
+- **ChaCha20-Poly1305** authenticated encryption
+- **Argon2id** password-based key derivation
+- **Authenticated metadata** preventing payload tampering
+- **Keyed Feistel permutation** with cycle walking for randomized data distribution
+- **Randomized streaming video embedding** using $\mathcal{O}(1)$ memory processing
+- **Explicit V1 compatibility** bridging legacy payloads
+- **Detection & forensic analysis** subsystems (Signature & Heuristics)
+
+**New in V2.1.0:**
+- **Web Console** (Streamlit-based) visual GUI for interactive operations
+- **Typer CLI** maintained and co-existing as a primary interface
+
+---
+
+## 🏛️ Architecture
+
+StegX separates its interface logic from its cryptographic core, allowing both the CLI and the Web Console to interface seamlessly with the exact same security APIs.
+
+```mermaid
+graph TD
+    UI[Web Console<br/>Streamlit] --> Core
+    CLI[CLI<br/>Typer / Rich] --> Core
+
+    subgraph StegX Core V2
+        Core --> Crypto[Cryptography<br/>Argon2id / ChaCha20]
+        Core --> Payload[Payload<br/>STG2 Formatting]
+        Core --> Positions[Positions<br/>Keyed Feistel]
+        Core --> Format[Media<br/>Image / Video API]
+        Core --> Analyze[Analysis<br/>Signatures / Heuristics]
+    end
+
+    Format --> Image[Image LSB]
+    Format --> Video[Streaming Video LSB]
 ```
- ██████╗▄▄▄█████▓▓█████  ▄████    ▐██▌ 
-██╔════╝▓  ██▒ ▓▒▓█   ▀ ██▒ ▀█▒ ▓▓▓▓██▓
-╚█████╗ ▒ ▓██░ ▒░▒███  ▒██░▄▄▄░   ▐██▌ 
- ╚═══██╗░ ▓██▓ ░ ▒▓█  ▄ ░▓█  ██▓ ▓▓▓▓██▓
-██████╔╝  ▒██▒ ░ ░▒████▒░▒▓███▀▒ ▐██▌ 
-╚═════╝   ▒ ░░   ░░ ▒░ ░ ░▒   ▒   ▀▀   
+
+### V2 Processing Pipeline
+
+```mermaid
+graph LR
+    P[Payload] --> A[Argon2id KDF]
+    A --> C[ChaCha20-Poly1305]
+    C --> STG2[Authenticated STG2 Format]
+    STG2 --> K[Keyed Position Permutation]
+    K --> LSB[Image/Video Embedding]
 ```
 
-**Secure Media Steganography Toolkit for Images and Videos**
+---
 
-<a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10+-4B7BFF?style=flat-square&labelColor=0B0E14" /></a>
-<a href="#-license"><img src="https://img.shields.io/badge/License-Educational-00E5A0?style=flat-square&labelColor=0B0E14" /></a>
-<a href="#-limitations"><img src="https://img.shields.io/badge/Status-Prototype-FF3B5C?style=flat-square&labelColor=0B0E14" /></a>
-<a href="#-usage"><img src="https://img.shields.io/badge/Interface-CLI-ECEFF4?style=flat-square&labelColor=0B0E14" /></a>
+## 🆚 Why StegX V2? (V1 vs V2)
 
-**[Features](#-features) · [Install](#-install) · [Quick Start](#-quick-start) · [Commands](#-commands) · [Usage](#-usage) · [Detection](#-detection) · [Testing](#-testing) · [Architecture](#-architecture) · [Roadmap](#-roadmap)**
+StegX V2 introduces the `STG2` format, hardening the payload against tampering and sequential detection.
 
-</div>
+| Feature | StegX V1 (Legacy) | StegX V2.1.0 |
+|---------|-------------------|--------------|
+| **Payload Format** | Legacy (Unauthenticated) | **STG2** Authenticated Payload |
+| **Cryptography** | Legacy crypto | **ChaCha20-Poly1305** |
+| **Key Derivation** | Basic / Legacy | **Argon2id** (memory-hard) |
+| **Metadata** | Unverified | **Authenticated Additional Data (AAD)** |
+| **Positioning** | Sequential / Legacy Random | **Keyed Feistel with Cycle Walking** |
+| **Video Processing** | High memory usage | **$\mathcal{O}(1)$ Streaming Architecture** |
+| **Interface** | CLI only | **CLI + Web Console** |
 
-<br/>
+---
 
-Every pixel has a channel it doesn't need. StegX writes payloads into that spare bit — across images and video frames — then gives you the tools to encrypt what you hid, measure how much room you have, and prove (or disprove) that something's there at all.
+## 🛡️ Security Model
 
-<br/>
+StegX V2 leverages state-of-the-art cryptographic primitives:
+- **Argon2id**: Mitigates brute-force and GPU-based password guessing.
+- **ChaCha20-Poly1305**: Provides confidentiality and integrity. The payload cannot be extracted or modified without triggering an authentication failure.
+- **Fresh Salt & Nonce**: Automatically generated per payload to prevent nonce-reuse vulnerabilities.
+- **Authenticated Metadata**: Filenames and payload headers are tied into the Poly1305 MAC tag.
 
-## `$ about StegX V2`
+> [!WARNING]
+> **Cryptographic Security vs. Steganographic Undetectability**
+> StegX guarantees cryptographic confidentiality and integrity. However, it **does not** claim steganographic undetectability. While randomized embedding disperses visual artifacts, the resulting statistical noise in the LSB plane can still be identified by advanced heuristic steganalysis or machine learning detectors.
 
-StegX defaults to the **StegX V2 protocol**, which provides:
-- **Authenticated Encryption**: ChaCha20-Poly1305 + Argon2id ensures confidentiality and tamper-evidence.
-- **Randomized Position Generator**: Keyed Feistel cycle-walking permutation scatters payload bits deterministically across the media carrier without ever hitting the same pixel twice.
-- **Independent Position Key**: Isolates cryptographic payload security from steganographic carrier placement.
-- **Streaming Media Integration**: Zero-memory `O(1)` dynamic position inversion enables mathematically perfect video stream decoding without holding frame pixels in RAM.
+---
 
-⚠️ **Important Security Distinction**:
-**Encryption security** provides cryptographic confidentiality and prevents tampering (provided the password is secure).
-**Steganographic detectability** is entirely separate. Randomized placement scatters data but does *not* eliminate statistical artifacts. Adversaries using advanced steganalysis or machine learning can still detect the presence of hidden data, even when randomized and encrypted.
+## 🌐 Web Console
 
-<br/>
+StegX 2.1.0 includes a professional, dark-themed cybersecurity workstation UI powered by Streamlit.
 
-## `$ features`
-
-<table>
-<tr>
-<th width="33%">Image</th>
-<th width="33%">Video</th>
-<th width="34%">Encryption</th>
-</tr>
-<tr valign="top">
-<td>
-
-LSB embedding into PNG, BMP, TIFF/TIF carriers. JPEG/WebP inputs are detected and redirected to a safe lossless output. Capacity calculation, extraction, and automatic preview of recovered text files. Optional key-based randomized pixel selection in place of sequential embedding.
-
-</td>
-<td>
-
-Frame-by-frame LSB embedding with FFV1 lossless codec support, pixel-level integrity verification, and video info / capacity analysis.
-
-</td>
-<td>
-
-Optional password-based encryption, applied **before** embedding — PBKDF2-HMAC-SHA256, a random 16-byte salt, 600,000 iterations, and Fernet authenticated encryption.
-
-</td>
-</tr>
-</table>
-
-<br/>
-
-## `$ detect`
-
-Two engines, one command. `detect` figures out whether your file is an image or video, then runs both.
-
-<table>
-<tr>
-<th width="20%"></th>
-<th width="40%">signature</th>
-<th width="40%">heuristic</th>
-</tr>
-<tr valign="top">
-<td><b>method</b></td>
-<td>Scans for StegX's structured <code>STEGX</code> magic header</td>
-<td>Measures statistical properties of the LSB plane</td>
-</tr>
-<tr valign="top">
-<td><b>recovers</b></td>
-<td>Version · encryption status · filename · payload size</td>
-<td>Entropy · chi-square · bit balance · suspicion score</td>
-</tr>
-<tr valign="top">
-<td><b>certainty</b></td>
-<td>Definitive — confirms a known StegX payload</td>
-<td>Probabilistic — flags anomalies, proves nothing</td>
-</tr>
-</table>
-
-> Heuristic analysis never proves hidden data exists. It only surfaces statistics that *may* indicate it.
-
+**Launch the Web Console:**
 ```bash
-python3 -m stegx.cli detect samples/test_stego.png
+streamlit run stegx/ui/app.py
 ```
 
-If the payload was embedded with `--position-key`, pass the same key to `detect` so the signature scan can locate the header at its randomized offsets:
+**Available Modules:**
+- **Dashboard**: System health, architecture overview, and format compatibility.
+- **Embed**: Secure media embedding workspace with capacity calculating and safe parameter input.
+- **Extract**: Authenticated extraction portal supporting STG2 verification and V1 fallbacks.
+- **Analyze**: Execute forensic signature detection and statistical heuristic tests.
+- **Payload Builder**: Visually construct and inspect raw STG2 binaries.
+- **Video Engine**: High-performance video inspection and FFV1 codec verification.
+- **Settings**: Cryptographic stack information and system limits.
 
+---
+
+## 💻 Command Line Interface (CLI)
+
+The Typer-based CLI remains a first-class citizen for automation and headless environments.
+
+**View Commands:**
 ```bash
-python3 -m stegx.cli detect samples/random_stego.png --position-key mysecretkey
+python -m stegx --help
 ```
 
-<details>
-<summary><b>sample report</b></summary>
+### Command Categories
+- **Image Operations:** `hide-image`, `extract-image`
+- **Video Operations:** `hide-video`, `extract-video`
+- **Analysis & Forensics:** `detect`, `analyze-signature`, `analyze-heuristic`, `analyze-video-signature`, `analyze-video-heuristic`
+- **Information:** `info`, `formats`, `check`, `capacity`, `video-capacity`, `video-info`, `payload-info`, `codec-test`, `video-integrity`
 
-```text
---- StegX Detection Report ---
+---
 
-File: samples/stego_video.avi
-Media Type: Video
-Format: AVI
+## 📦 Installation
 
---- Signature Analysis ---
-[+] STEGX signature: DETECTED
-[+] Version: 1
-[+] Encrypted: False
-[+] Original filename: secret.txt
-[+] Payload size: 17 B
-
---- Heuristic Analysis ---
-Frames analyzed: 20
-Suspicion Score: 0/100
-Verdict: Low suspicion
-
---- Overall Result ---
-[+] KNOWN STEGX PAYLOAD DETECTED
-[+] Hidden data is confirmed by the STEGX signature.
-```
-
-</details>
-
-<br/>
-
-## `$ architecture`
-
-```
-StegX
-│
-├── stegx/
-│   ├── core/              shared primitives
-│   │   ├── crypto.py          encryption · key derivation
-│   │   ├── format_handler.py  media format validation
-│   │   └── payload.py         payload packing · parsing
-│   │
-│   ├── image/              image pipeline
-│   │   ├── capacity.py
-│   │   ├── embed.py
-│   │   └── extract.py
-│   │
-│   ├── video/               video pipeline
-│   │   ├── analyze.py
-│   │   ├── capacity.py
-│   │   ├── codec_test.py
-│   │   ├── detection.py
-│   │   ├── embed.py
-│   │   ├── extract.py
-│   │   ├── heuristic.py
-│   │   └── integrity.py
-│   │
-│   ├── analysis/            detection engines
-│   │   ├── heuristic.py
-│   │   └── signature.py
-│   │
-│   ├── utils/
-│   │   └── banner.py
-│   │
-│   └── cli.py                entry point
-│
-├── samples/
-├── requirements.txt
-├── pyproject.toml
-└── README.md
-```
-
-<br/>
-
-## `$ requirements`
-
-- Python 3.10+
-- pip
-- OpenCV-compatible video backend
-- FFV1 codec support for lossless video embedding
-
-<br/>
-
-## `$ install`
-
-Clone the repository:
-
+**1. Clone the repository:**
 ```bash
-git clone https://github.com/adicyb/StegX.git
-cd StegX
+git clone https://github.com/adicyb/StegX-v2.git
+cd StegX-v2
 ```
 
-Create and activate a virtual environment:
-
-**Linux/macOS**
-
+**2. Create a virtual environment:**
 ```bash
-python3 -m venv .venv
+# Linux / macOS
+python -m venv .venv
 source .venv/bin/activate
-```
 
-**Windows**
-
-```bash
+# Windows
 python -m venv .venv
 .venv\Scripts\activate
 ```
 
-Then install StegX itself (this uses `pyproject.toml` and registers the `stegx` command on your `PATH`):
-
+**3. Install StegX:**
 ```bash
-pip install -e .
+python -m pip install -e .
 ```
 
-> Installing only `requirements.txt` sets up the dependencies but does **not** install the `stegx` command. Use `pip install -e .` to get the CLI entry point.
+---
 
-Once installed, verify it worked:
+## 🚀 Quick Start
 
+### Image Embedding (V2)
+It is highly recommended to use the interactive password prompt rather than exposing secrets in your shell history.
 ```bash
-stegx
+python -m stegx hide-image carrier.png secret.txt stego.png \
+  --position-key "my_randomization_key"
+# (You will be prompted securely for the master password)
 ```
 
-<br/>
-
-## `$ quick start`
-
-After installation, launch StegX by running:
-
+### Video Embedding (V2)
+Video requires an uncompressed or lossless codec (e.g., FFV1 via AVI/MKV) to preserve the LSB data.
 ```bash
-stegx
+python -m stegx hide-video carrier.avi secret.zip stego.avi \
+  --position-key "my_randomization_key"
 ```
 
-This displays the StegX banner and the available commands, grouped into Image, Video, and Detection categories.
-
-For help with a specific command:
-
+### V1 Compatibility Extraction
+V1 handling is completely isolated and explicit. Old payloads are not automatically upgraded.
 ```bash
-stegx COMMAND --help
+python -m stegx extract-image stego_v1.png extracted_dir/ --v1
 ```
 
-For example:
+---
 
-```bash
-stegx hide-image --help
-stegx extract-image --help
-stegx hide-video --help
-stegx extract-video --help
-```
+## 📼 Video Architecture
 
-<br/>
+StegX V2 processes video frame-by-frame using an **$\mathcal{O}(1)$ memory design**. Whether the video is 5 MB or 5 GB, StegX streams the frames dynamically, enabling massive payload support without crashing system RAM.
 
-## `$ commands`
+*Note: Video embedding explicitly relies on the FFV1 codec. Highly compressed codecs like H.264/H.265 destructively alter pixels, destroying LSB payloads.*
 
-Running `stegx` with no arguments displays the available commands grouped by category.
+---
 
-### Image Commands
+## 📂 V2 Payload Format (STG2)
 
-| Command | Description |
-|---|---|
-| `info` | Display information about StegX |
-| `formats` | Display supported media formats |
-| `check FILE` | Check whether a media file is supported |
-| `capacity IMAGE` | Calculate image payload capacity |
-| `payload-info FILE` | Inspect a StegX payload |
-| `hide-image` | Hide a file inside an image |
-| `extract-image` | Extract hidden data from an image |
-| `analyze-signature` | Analyze an image for a StegX signature |
-| `analyze-heuristic` | Analyze an image for possible LSB steganography |
-
-### Video Commands
-
-| Command | Description |
-|---|---|
-| `video-info VIDEO` | Display video information |
-| `video-capacity VIDEO` | Calculate video payload capacity |
-| `codec-test VIDEO` | Test video codec compatibility |
-| `video-integrity ORIGINAL MODIFIED` | Compare original and modified video frames |
-| `hide-video` | Hide a file inside a video |
-| `extract-video` | Extract hidden data from a video |
-| `analyze-video-signature` | Analyze a video for a StegX signature |
-| `analyze-video-heuristic` | Analyze a video for possible steganographic artifacts |
-
-### Detection
-
-| Command | Description |
-|---|---|
-| `detect FILE` | Detect possible StegX payloads using signature and heuristic analysis |
-
-<br/>
-
-## `$ usage`
-
-### StegX V2
-
-StegX defaults to the modern V2 format, which requires a password and an independent position key (for default randomized mode).
-
-#### Password Handling
-Passwords are never accepted as plaintext command-line arguments to prevent leakage in shell history or process monitors.
-Use `-p` or `--password` to trigger a secure interactive prompt. For automation, the `STEGX_PASSWORD` environment variable is supported (with a security warning).
-
-#### Overwrite Protection
-Extraction uses safe path resolution. Existing files will not be overwritten unless `--force` (`-f`) is explicitly provided.
-
-<details open>
-<summary><b>image</b></summary>
-
-```bash
-# V2 embedding (randomized by default)
-python3 -m stegx.cli hide-image \
-  samples/carrier.png \
-  samples/secret.txt \
-  --output-path samples/stego.png \
-  --position-key my_random_seed \
-  -p
-
-# Extraction
-python3 -m stegx.cli extract-image \
-  samples/stego.png \
-  --output-directory samples/extracted \
-  --position-key my_random_seed \
-  -p
-```
-
-> The `--position-key` controls *where* bits are hidden. The `-p` password controls *what* the bits decrypt to.
-
-If low latency is required, you can use sequential mode:
-```bash
-python3 -m stegx.cli hide-image samples/carrier.png samples/secret.txt -p --sequential
-```
-</details>
-
-<details open>
-<summary><b>video (streaming support)</b></summary>
-
-Video embedding utilizes an $\mathcal{O}(1)$ algorithmic position inverse, guaranteeing that neither the embedding nor the extraction routines store arrays of video pixels in memory.
-
-```bash
-python3 -m stegx.cli hide-video \
-  samples/video.mp4 \
-  samples/secret.txt \
-  --output-path samples/stego.avi \
-  --position-key video_seed \
-  -p
-
-python3 -m stegx.cli extract-video \
-  samples/stego.avi \
-  --position-key video_seed \
-  -p
-```
-
-> ⚠️ **Important:** LSB-based video embedding requires pixel values to survive encoding. StegX currently uses the **FFV1 lossless codec** for stego video output. Transcoding it to MP4/H.264 or uploading it to web platforms will destroy the payload.
-
-</details>
-
-<details open>
-<summary><b>V1 legacy format</b></summary>
-
-To use or extract legacy unauthenticated StegX V1 payloads, pass the `--v1` flag.
-```bash
-python3 -m stegx.cli hide-image samples/carrier.png samples/secret.txt --v1
-python3 -m stegx.cli extract-image samples/stego.png --v1
-```
-
-</details>
-
-<br/>
-
-## `$ payload format`
-
-### V2 Format (Authenticated)
+StegX wraps user data into the `STG2` binary protocol before embedding. Metadata and constraints are strictly enforced before unlocking ciphertext.
 
 ```text
-┌───────────────┐
-│ MAGIC: STG2   │  4 bytes
-├───────────────┤
-│ VERSION       │  1 byte (0x02)
-├───────────────┤
-│ FLAGS         │  1 byte
-├───────────────┤
-│ SALT          │  16 bytes (Argon2id)
-├───────────────┤
-│ NONCE         │  12 bytes (ChaCha20)
-├───────────────┤
-│ CIPHERTEXT    │  variable
-├───────────────┤
-│ MAC TAG       │  16 bytes (Poly1305)
-└───────────────┘
+[ 4B ] MAGIC: STG2
+[ 1B ] VERSION: 0x02
+[ 1B ] FLAGS (e.g., Encrypted)
+[ 2B ] FILENAME_LEN
+[ 8B ] PAYLOAD_LEN
+[ VAR ] FILENAME
+[ 16B ] SALT (Argon2id)
+[ 12B ] NONCE (ChaCha20)
+[ VAR ] CIPHERTEXT
+[ 16B ] MAC TAG (Poly1305)
 ```
 
-The ciphertext encapsulates the filename length, filename, and plaintext data. Validating the Poly1305 MAC tag guarantees cryptographic integrity of the payload, rejecting incorrect passwords and tampering identically to prevent oracle attacks.
+---
 
-### Protocol Details
-- **Key Derivation:** Argon2id (t=2, m=65536 KiB, p=4) derives 32 bytes from the interactive password.
-- **AEAD:** ChaCha20-Poly1305 (RFC 7539).
-- **Position Generation:** Keyed Feistel cycle-walking permutation using ChaCha20 as the PRF, domain separated strictly for position layout.
+## 🧪 Testing
 
-<br/>
+The codebase is heavily tested to ensure cryptographic integrity, format boundaries, and interface reliability.
 
-## `$ testing`
-
-Run the complete test suite using:
+Current validation: **97 tests passed** covering core cryptography, memory exhaustion protections, path traversal defenses, V1 backward compatibility, and Web Console integrity.
 
 ```bash
-pytest -v
+python -m pytest -q
 ```
 
-The project currently includes tests for:
+---
 
-- Payload creation and validation
-- Encryption and decryption
-- Incorrect password handling
-- Randomized embedding positions
-- Image embedding and extraction
-- Video embedding and extraction
-- Encrypted and randomized workflows
+## 🌲 Project Structure
 
-Current test suite: **95 tests passing**.
+```text
+stegx/
+├── analysis/       # Forensics, heuristics, and signature detection
+├── cli.py          # Typer/Rich command line interface
+├── core/           # Cryptography, STG2 payload processing, positioning
+├── image/          # Image embedding and extraction engines
+├── ui/             # Streamlit Web Console and page routing
+├── utils/          # Shared utility functions
+└── video/          # O(1) streaming video processing
+```
 
-<br/>
+---
 
-## `$ limitations`
+## ⚠️ Limitations
 
-- **Steganalysis:** Randomized pixel selection mathematically disperses bits but does **not** make the steganography undetectable. Advanced heuristic or machine-learning steganalysis can still detect carrier alteration. Do not confuse encryption security with steganographic invisibility.
-- **Video Compression:** Video embedding requires a lossless codec (FFV1). Any lossy recompression (e.g. to MP4/H.264) will destroy the payload.
-- **Legacy Fallback:** The CLI does not silently fallback between V1 and V2. Legacy payload extraction requires the explicit `--v1` flag.
+- **FFV1 Codec Dependency:** Videos must be exported using lossless FFV1. Standard formats like MP4/H.264 compression will strip and destroy the payload.
+- **Steganalysis Visibility:** The statistical anomaly introduced by randomized bit-flipping is measurable via chi-square and entropy analysis.
+- **Payload Capacity:** Dependent purely on spatial dimensions/frame counts. StegX calculates boundaries securely and rejects payloads that exceed physical limits.
 
-<br/>
+---
 
-## `$ roadmap`
+## 🗺️ Roadmap
 
-- [x] Key-based randomized pixel selection *(images)*
-- [ ] Key-based randomized pixel selection *(video)*
-- [ ] Multi-bit embedding options
-- [ ] Additional image formats
-- [ ] Audio steganography
-- [ ] Advanced steganalysis techniques
-- [ ] ML-based steganography detection
-- [ ] GUI / web interface
-- [ ] Batch media analysis
-- [ ] Automated report generation
+- Batch processing support for massive collections of media.
+- Automated forensic report generation for extracted media metrics.
 
-<br/>
+---
+
+## ⚖️ License
+
+There is currently no formal OSI-approved license file in this repository. The author has explicitly designated the codebase for educational and research purposes. See the disclaimer below.
 
 ---
 
